@@ -1,14 +1,20 @@
-import csv
 import time
 from datetime import datetime
-from typing import Generator
+import sys
 
 import pyodbc
+
+from decorators import measure_time
+from odbc_util import get_db_connect
+from odbc_util import SOURCE
+from odbc_util import TARGET
+from csv_processor import get_mig_list
 
 NONE = "NONE"
 BLOB = "BLOB"
 CLOB = "CLOB"
 ERROR = "ERROR"
+
 
 def _create_migration_result_csv(file_path, header=None):
     # TODO
@@ -31,8 +37,11 @@ def _log_migration_result(
     pass
 
 
-def _get_row_count(owner: str, tablename: str, cursor: pyodbc.Cursor) -> int:
+def get_row_count(owner: str, tablename: str) -> int:
+    connection = None
+    cursor = None
     try:
+        connection, cursor = get_db_connect(owner, SOURCE)
         select_query = f"SELECT COUNT(0) FROM {owner}.{tablename}"
         cursor.execute(select_query)
         row_count = cursor.fetchone()[0]
@@ -41,10 +50,16 @@ def _get_row_count(owner: str, tablename: str, cursor: pyodbc.Cursor) -> int:
     except Exception as e:
         print("_get_row_count error!", e)
         raise e
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
 
 
 def _get_lob_type(owner: str, tablename: str, cursor: pyodbc.Cursor) -> str:
-    select_query = f"""SELECT DATA_TYPE 
+    select_query = f"""
+        SELECT DATA_TYPE 
         FROM ALL_TAB_COLUMNS
         WHERE OWNER = '{owner}' 
         and TABLE_NAME = '{tablename}' 
@@ -128,62 +143,39 @@ def _truncate_table(owner: str, tablename: str) -> None:
             connection.close()
 
 
-def _get_db_connect(owner, db_type):
-    connection = None
-    cursor = None
-    connection_str = ""
-
-    try:
-        if db_type == "source":
-            connection_str = f"DSN=DataSource;DBQ=DB;UID=id;PWD=password"
-        elif db_type == "target":
-            connection_str = f"DSN=DataSource;DBQ=DB;UID=id;PWD=password"
-        else:
-            raise ValueError('_get_db_connect db_type must be entered only with source or target')
-
-        connection = pyodbc.connect(connection_str)
-        cursor = connection.cursor()
-
-        return connection, cursor
-
-    except Exception as e:
-        print("==============================")
-        print("_get_db_connect error!", e)
-        print("==============================")
-        raise e
+@measure_time
+def _migrate_normal_size():
+    pass
 
 
-def _get_mig_list(file_path: str) -> Generator[list, None, None]:
-    try:
-        with open(file_path, "r") as file:
-            reader = csv.reader(file)
-            for row in reader:
-                yield row
-    except FileNotFoundError as e:
-        print(f"File not found: {file_path}", e)
-        yield from []
-    except IOError as e:
-        print(f"Error reading file: {file_path}", e)
-        yield from []
+@measure_time
+def _migrate_large_size():
+    pass
 
 
 def do_migration():
-    mig_list = _get_mig_list(".\\sample\\migration_list.csv")
+    mig_list = None
+    if sys.platform.startswith("win"):
+        mig_list = get_mig_list("input/migration_list.csv")
+    else:
+        mig_list = get_mig_list("input/migration_list.csv")
+
     for mig in mig_list:
         owner = mig[0]
         table_name = mig[1]
 
-        target_connection, target_cursor = _get_db_connect(owner, "target")
+        target_connection, target_cursor = get_db_connect(owner, TARGET)
 
         lob_type = _get_lob_type(owner, table_name, target_cursor)
+        row_count = get_row_count(owner, table_name)
 
-        if lob_type == NONE:
-            pass
-        elif lob_type == CLOB:
-            pass
+        if lob_type == NONE and row_count < 1_000_000:
+            _migrate_normal_size()
+        elif lob_type == CLOB or row_count >= 1_000_000:
+            _migrate_large_size()
         elif lob_type == BLOB:
-            pass
-        else: # Error
+            _migrate_large_size()
+        else:  # Error
             # TODO 실패 입력?
             continue
 
