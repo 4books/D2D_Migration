@@ -6,14 +6,12 @@ import pyodbc
 
 from decorators import measure_time
 from odbc_util import get_db_connect
-from odbc_util import SOURCE
-from odbc_util import TARGET
+from odbc_util import get_lob_type
+from odbc_util import truncate_table
+from odbc_util import get_columns_info
+from odbc_util import get_pk_columns_info
 from csv_processor import get_mig_list
-
-NONE = "NONE"
-BLOB = "BLOB"
-CLOB = "CLOB"
-ERROR = "ERROR"
+from constants import *
 
 
 def _create_migration_result_csv(file_path, header=None):
@@ -23,10 +21,10 @@ def _create_migration_result_csv(file_path, header=None):
 
 
 def _log_migration_result(
-        connection: pyodbc.Connection,
-        cursor: pyodbc.Cursor,
+        source_connection: pyodbc.Connection,
+        source_cursor: pyodbc.Cursor,
         owner: str,
-        tablename: str,
+        table_name: str,
         result: str,
         total_count=0,
         exe_time=0,
@@ -37,115 +35,77 @@ def _log_migration_result(
     pass
 
 
-def get_row_count(owner: str, tablename: str) -> int:
-    connection = None
-    cursor = None
+def get_row_count(owner: str, table_name: str) -> int:
+    source_connection = None
+    source_cursor = None
     try:
-        connection, cursor = get_db_connect(owner, SOURCE)
-        select_query = f"SELECT COUNT(0) FROM {owner}.{tablename}"
-        cursor.execute(select_query)
-        row_count = cursor.fetchone()[0]
+        source_connection, source_cursor = get_db_connect(owner, SOURCE)
+        select_query = f"SELECT COUNT(0) FROM {owner}.{table_name}"
+        source_cursor.execute(select_query)
+        row_count = source_cursor.fetchone()[0]
 
         return int(row_count)
     except Exception as e:
-        print("_get_row_count error!", e)
+        print("get_row_count error!", e)
         raise e
     finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
-
-
-def _get_lob_type(owner: str, tablename: str, cursor: pyodbc.Cursor) -> str:
-    select_query = f"""
-        SELECT DATA_TYPE 
-        FROM ALL_TAB_COLUMNS
-        WHERE OWNER = '{owner}' 
-        and TABLE_NAME = '{tablename}' 
-    """
-    try:
-        cursor.execute(select_query)
-
-        lob_type = NONE
-        for row in cursor.fetchall():
-            data_type = row[0]
-            if data_type == BLOB:
-                return BLOB  # BLOB은 바로 리턴해주어야 함
-            elif data_type == CLOB:
-                lob_type = CLOB
-        return lob_type
-    except Exception as e:
-        print("_get_lob_type error!", e)
-        return ERROR
-
-
-def _get_columns_info(owner: str, tablename: str, cursor: pyodbc.Cursor) -> tuple[list, list]:
-    pk_columns = []
-    select_query = f"""
-        SELECT COL.COLUMN_NAME COLUMN_NAME
-        FROM ALL_CONSTRAINTS CONS
-        INNER JOIN ALL_CONS_COLUMNS COL
-            ON CONS.OWNER = COL.OWNER
-            AND CONS.TABLE_NAME = COL.TABLE_NAME
-            AND CONS.CONSTRAINT_NAME = COL.CONSTRAINT_NAME
-        WHERE CONS.OWNER = '{owner}'
-        AND CONS.TABLE_NAME = '{tablename}'
-        AND CONS.CONSTRAINT_TYPE = 'P'
-        ORDER BY COL."POSITION"
-    """
-
-    cursor.execute(select_query)
-    for column in cursor.fetchall():
-        pk_columns.append(column[0])
-
-    columns = []
-    select_query = f"""
-        SELECT COLUMN_NAME COLUMN_NAME
-        FROM ALL_TAB_COLUMNS
-        WHERE OWNER = '{owner}'
-        AND TABLE_NAME = '{tablename}'
-        ORDER BY COLUMN_ID
-    """
-
-    cursor.execute(select_query)
-    for column in cursor.fetchall():
-        columns.append(column[0])
-
-    # pk 컬럼이 없는 경우를 위해
-    if not pk_columns:
-        pk_columns.append(columns[0])
-
-    return pk_columns, columns
-
-
-def _truncate_table(owner: str, tablename: str) -> None:
-    connection = None
-    cursor = None
-
-    try:
-        # Truncate를 하기 위해 각 스키마에 맞게 새로 접속
-        connection_str = f"DSN=DataSource;UID={owner};PWD=password"
-        connection = pyodbc.connect(connection_str)
-        cursor = connection.cursor()
-
-        cursor.execute(f"TRUNCATE TABLE {owner}.{tablename} REUSE STORAGE")
-        connection.commit()
-
-        print(owner, tablename, "table truncated")
-    except Exception as e:
-        print("_truncate_table error!", e)
-        raise e
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
+        if source_cursor:
+            source_cursor.close()
+        if source_connection:
+            source_connection.close()
 
 
 @measure_time
-def _migrate_normal_size():
-    pass
+def insert_noraml_data(owner: str, table_name: str, rows: list, target_connection: pyodbc.Connection,
+                       target_cursor: pyodbc.Cursor):
+    try:
+        columns = get_columns_info(owner, table_name, target_cursor)
+
+        insert_query = f"""
+            INSERT INTO {owner}.{table_name} NOLOGGING ({", ".join(columns)}) 
+            VALUES({", ".join([f":{i + 1}" for i in range(len(columns))])})
+        """
+
+        target_cursor.executemany(insert_query, rows)
+        target_connection.commit()
+
+    except Exception as e:
+        print("insert_noraml_data error!", e)
+        raise e
+
+
+@measure_time
+def _migrate_normal_size(owner: str, table_name: str, target_connection: pyodbc.Connection,
+                         target_cursor: pyodbc.Cursor):
+    rows = select_normal_data(owner, table_name)
+
+    if len(rows) == 0:
+        print(f"{owner}.{table_name} No rows")
+        # TODO 결과 insert
+        return
+
+    insert_noraml_data(owner, table_name, rows, target_connection, target_cursor)
+
+
+@measure_time
+def select_normal_data(owner, table_name) -> list[pyodbc.Row]:
+    source_connection = None
+    source_cursor = None
+    try:
+        select_query = f"SELECT * FROM {owner}.{table_name}"
+        source_connection, source_cursor = get_db_connect(owner, SOURCE)
+        source_cursor.execute(select_query)
+        rows = source_cursor.fetchall()
+    except Exception as e:
+        print("select_normal_data error!", e)
+        raise e
+    finally:
+        if source_cursor:
+            source_cursor.close()
+        if source_connection:
+            source_connection.close()
+
+    return rows
 
 
 @measure_time
@@ -154,7 +114,6 @@ def _migrate_large_size():
 
 
 def do_migration():
-    mig_list = None
     if sys.platform.startswith("win"):
         mig_list = get_mig_list("input/migration_list.csv")
     else:
@@ -163,21 +122,43 @@ def do_migration():
     for mig in mig_list:
         owner = mig[0]
         table_name = mig[1]
+        is_truncate = mig[2]
 
-        target_connection, target_cursor = get_db_connect(owner, TARGET)
+        print(owner, table_name, "migration start")
+        start_time = time.time()
 
-        lob_type = _get_lob_type(owner, table_name, target_cursor)
-        row_count = get_row_count(owner, table_name)
+        target_connection = None
+        target_cursor = None
+        try:
+            target_connection, target_cursor = get_db_connect(owner, TARGET)
 
-        if lob_type == NONE and row_count < 1_000_000:
-            _migrate_normal_size()
-        elif lob_type == CLOB or row_count >= 1_000_000:
-            _migrate_large_size()
-        elif lob_type == BLOB:
-            _migrate_large_size()
-        else:  # Error
-            # TODO 실패 입력?
+            if is_truncate == 'Y':
+                truncate_table(owner, table_name, target_connection, target_cursor)
+
+            lob_type = get_lob_type(owner, table_name, target_cursor)
+            row_count = get_row_count(owner, table_name)
+
+            if lob_type == NONE and row_count < 1_000_000:
+                _migrate_normal_size(owner, table_name, target_connection, target_cursor)
+            elif lob_type == NONE and row_count >= 1_000_000:
+                _migrate_large_size()
+            elif lob_type == CLOB:
+                _migrate_large_size()
+            elif lob_type == BLOB:
+                _migrate_large_size()
+
+        except Exception as e:
+            print(owner, table_name, "error...", e)
             continue
+        finally:
+            if target_cursor:
+                target_cursor.close()
+            if target_connection:
+                target_connection.close()
+
+        elapsed = time.time() - start_time
+        print(owner, table_name, "migration end")
+    # End of for
 
 
 if __name__ == '__main__':
