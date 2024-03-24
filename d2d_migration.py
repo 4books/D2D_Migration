@@ -38,8 +38,13 @@ def _log_migration_result(
 
 
 @measure_time
-def migrate_table(owner: str, table: str, result_dict: dict, complete_queue: multiprocessing.Queue,
-                  is_truncate: bool = False) -> None:
+def migrate_table(
+        owner: str,
+        table: str,
+        result_dict: dict,
+        complete_queue: multiprocessing.Queue,
+        is_truncate: bool = False
+) -> None:
     source_pk_connection = None
     source_pk_cursor = None
     source_data_connection = None
@@ -164,8 +169,11 @@ def migrate_table(owner: str, table: str, result_dict: dict, complete_queue: mul
             target_connection.close()
 
 
-def get_child_process_and_start_migrate(mig_table: tuple, result_dict: dict, complete_queue: multiprocessing.Queue) \
-        -> tuple[str, str, multiprocessing.Process]:
+def get_child_process_and_start_migrate(
+        mig_table: tuple,
+        result_dict: dict,
+        complete_queue: multiprocessing.Queue
+) -> tuple[str, str, multiprocessing.Process]:
     owner = mig_table[0]
     table = mig_table[1]
     is_truncate = True if mig_table[2] == 'Y' else False
