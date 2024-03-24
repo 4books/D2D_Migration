@@ -31,16 +31,11 @@ def truncate_table(owner: str, table_name: str, connection: pyodbc.Connection, c
 
         print(owner, table_name, "table truncated")
     except Exception as e:
-        print("_truncate_table error!", e)
+        print("truncate_table error!", e)
         raise e
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
 
 
-def get_pk_columns_info(owner: str, table_name: str, cursor: pyodbc.Cursor) -> list:
+def get_pk_columns_info(owner: str, table_name: str, cursor: pyodbc.Cursor) -> list[str]:
     pk_columns = []
     select_query = f"""
         SELECT COL.COLUMN_NAME COLUMN_NAME
@@ -62,21 +57,20 @@ def get_pk_columns_info(owner: str, table_name: str, cursor: pyodbc.Cursor) -> l
     return pk_columns
 
 
-def get_columns_info(owner: str, table_name: str, cursor: pyodbc.Cursor) -> list:
-    columns = []
+def get_columns_info(owner: str, table_name: str, cursor: pyodbc.Cursor) -> tuple[list[str], list[str]]:
+    # 컬럼 정보만 가져오기 위해서 1 = 0
     select_query = f"""
-        SELECT COLUMN_NAME COLUMN_NAME
-        FROM ALL_TAB_COLUMNS
-        WHERE OWNER = '{owner}'
-        AND TABLE_NAME = '{table_name}'
-        ORDER BY COLUMN_ID
+        SELECT *
+        FROM {owner}.{table_name}
+        WHERE 1 = 0
     """
 
     cursor.execute(select_query)
-    for column in cursor.fetchall():
-        columns.append(column[0])
 
-    return columns
+    column_names = [column[0] for column in cursor.description]
+    columns_type = [column[1] for column in cursor.description]
+
+    return column_names, columns_type
 
 
 def get_lob_type(owner: str, table_name: str, cursor: pyodbc.Cursor) -> str:
