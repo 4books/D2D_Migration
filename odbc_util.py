@@ -5,6 +5,7 @@ from constants import *
 
 def get_db_connect(owner, db_type) -> tuple[pyodbc.Connection, pyodbc.Cursor]:
     try:
+        # TODO 테스트 개발서버 and QA 서버
         if db_type == SOURCE:
             connection_str = f"DSN=DataSource;DBQ=DB;UID=id;PWD=password"
         elif db_type == TARGET:
