@@ -1,12 +1,13 @@
 import multiprocessing
+import platform
 import time
 from datetime import datetime
 import sys
-from multiprocessing import Queue, Process, Manager
+from multiprocessing import Queue, Process
+import argparse
 
 import pyodbc
 
-from decorators import measure_time
 from odbc_util import get_db_connect
 from odbc_util import get_lob_type
 from odbc_util import truncate_table
@@ -37,22 +38,23 @@ def _log_migration_result(
     pass
 
 
-@measure_time
 def migrate_table(
         owner: str,
         table: str,
         result_dict: dict,
         complete_queue: multiprocessing.Queue,
-        is_truncate: bool = False
+        truncate_flag: bool,
+        commit_size: int,
+        max_retry: int
 ) -> None:
+    table_start_time = time.time()
+
     source_pk_connection = None
     source_pk_cursor = None
     source_data_connection = None
     source_data_cursor = None
     target_connection = None
     target_cursor = None
-    commit_size = 1000
-    max_retry = 10  # TODO 재시도...?
     partition = 0
     total_count = 0
 
@@ -77,12 +79,12 @@ def migrate_table(
 
         insert_query = f"""
             INSERT INTO {owner}.{table} NOLOGGING ({", ".join(column_names)})
-            values ({", ".join("TO_DATE(?, 'YYYY-MM-DD HH24:MI:SS')" if column_type == pyodbc.SQL_TYPE_DATE else "?"
+            values ({", ".join("TO_DATE(?, 'YYYY-MM-DD HH24:MI:SS')" if column_type == datetime else "?"
                                for column_type in columns_type)})
         """
 
         # 테이블 초기화
-        if is_truncate:
+        if truncate_flag:
             truncate_table(owner, table, target_connection, target_cursor)
 
         lob_type = get_lob_type(owner, table, target_cursor)
@@ -105,7 +107,8 @@ def migrate_table(
                     break
 
             print("======================================")
-            print(f" {partition + 1}번째 pk select {len(key_list)}건 완료 {time.time() - start_time:.3f}sec 소요")
+            print(
+                f"{partition + 1}번째 {owner}.{table} pk select {len(key_list)}건 완료 {time.time() - start_time:.3f} sec 소요")
 
             if not key_list:
                 target_connection.commit()
@@ -121,8 +124,21 @@ def migrate_table(
             while key_list:
                 key_value = key_list.pop()
 
-                source_data_cursor.execute(select_data_query, key_value)
-                row = source_data_cursor.fetchone()
+                retry_count = 0
+                row = None
+
+                while retry_count < max_retry:
+                    try:
+                        source_data_cursor.execute(select_data_query, key_value)
+                        row = source_data_cursor.fetchone()
+                        break
+                    except Exception as e:
+                        retry_count += 1
+                        if retry_count == max_retry:
+                            raise e
+                        else:
+                            print(f"{partition + 1}번째 {owner}.{table} data select 실패. retry {retry_count}/{max_retry}")
+                            time.sleep(10)
 
                 insert_data.append(tuple(
                     bytes(value) if isinstance(value, bytearray)  # Blob 처리
@@ -133,19 +149,35 @@ def migrate_table(
             # End of key_list while
 
             print("======================================")
-            print(f" {partition + 1}번째 data select {len(insert_data)}건 완료 {time.time() - start_time:.3f}sec 소요")
+            print(
+                f"{partition + 1}번째 {owner}.{table} data select {len(insert_data)}건 완료 {time.time() - start_time:.3f} sec 소요")
 
             start_time = time.time()
-            target_cursor.executemany(insert_query, insert_data)
+            retry_count = 0
+            while retry_count < max_retry:
+                try:
+                    target_cursor.executemany(insert_query, insert_data)
+                    break
+                except Exception as e:
+                    retry_count += 1
+                    if retry_count == max_retry:
+                        raise e
+                    else:
+                        print(f"{partition + 1}번째 {owner}.{table} data insert 실패. retry {retry_count}/{max_retry}")
+                        time.sleep(10)
+
             total_count += len(insert_data)
 
             print("======================================")
-            print(f" {partition + 1}번째 data insert {len(insert_data)}건 완료 {time.time() - start_time:.3f}sec 소요")
+            print(
+                f"{partition + 1}번째 {owner}.{table} data insert {len(insert_data)}건 완료 {time.time() - start_time:.3f} sec 소요")
             print("======================================")
 
             if total_count % commit_size == 0:
                 target_connection.commit()
-                print(f"{owner}.{table} {total_count}건 커밋 완료")
+                print(f"{owner}.{table} {partition + 1}번째 commit. 총 {total_count}건 커밋 완료")
+
+            partition += 1
         # End of main while
 
     except Exception as e:
@@ -168,27 +200,30 @@ def migrate_table(
         if target_connection:
             target_connection.close()
 
+        print(f"{owner}.{table} 총 소요시간 : {time.time() - table_start_time:.3f} sec")
+
 
 def get_child_process_and_start_migrate(
         mig_table: tuple,
         result_dict: dict,
-        complete_queue: multiprocessing.Queue
+        complete_queue: multiprocessing.Queue,
+        truncate_flag: bool = True,
+        commit_size: int = 1000,
+        max_retry: int = 5
 ) -> tuple[str, str, multiprocessing.Process]:
     owner = mig_table[0]
     table = mig_table[1]
-    is_truncate = True if mig_table[2] == 'Y' else False
 
-    process = Process(target=migrate_table, args=(owner, table, result_dict, complete_queue, is_truncate))
+    process = Process(target=migrate_table,
+                      args=(owner, table, result_dict, complete_queue, truncate_flag, commit_size, max_retry))
     process.start()
 
     return owner, table, process
 
 
-def do_migration(max_processes=10):
-    if sys.platform.startswith("win"):
-        mig_list = get_mig_list("input\\migration_list.csv")
-    else:
-        mig_list = get_mig_list("input/migration_list.csv")
+def do_migration(max_processes: int = 10, truncate_flag: bool = True, commit_size: int = 1000, max_retry: int = 5,
+                 file_path: str = "") -> None:
+    mig_list = get_mig_list(file_path)
 
     # 실행 중인 프로세스 리스트
     processes = []
@@ -202,7 +237,8 @@ def do_migration(max_processes=10):
         # 실행 중인 프로세스 수가 최대 프로세스 수보다 작고 남은 테이블이 있는 경우
         while len(processes) < max_processes and mig_list:
             # child 프로세스 생성
-            owner, table, process = get_child_process_and_start_migrate(mig_list.pop(), result_dict, complete_queue)
+            owner, table, process = get_child_process_and_start_migrate(mig_list.pop(), result_dict, complete_queue,
+                                                                        truncate_flag, commit_size, max_retry)
             processes.append((owner, table, process))
 
         # 완료된 프로세스 확인 및 결과 처리
@@ -214,16 +250,18 @@ def do_migration(max_processes=10):
                     status = result_dict[f"{owner}{table}"]
                     processes.remove((owner, table, process))
 
-                    if status == "SUCC":
+                    if status == SUCC:
+                        process.join()
                         process.close()
                     else:
                         process.terminate()
-                    process.join()
+                        process.join()
 
                     # 새로운 프로세스 생성
                     if mig_list:
                         owner, table, process = get_child_process_and_start_migrate(mig_list.pop(), result_dict,
-                                                                                    complete_queue)
+                                                                                    complete_queue, truncate_flag,
+                                                                                    commit_size, max_retry)
                         processes.append((owner, table, process))
 
                     break
@@ -240,7 +278,23 @@ if __name__ == '__main__':
     print("D2D Migration start")
     print("시작 시간:", start_datetime.strftime("%Y-%m-%d %H:%M:%S"))
 
-    do_migration(max_processes=10)
+    default_file_path = ""
+    if platform.system() == "Windows":
+        default_file_path = "input\\migration_list.csv"
+    else:
+        default_file_path = "input/migration_list.csv"
+
+    parser = argparse.ArgumentParser(description='D2D Migration Tool')
+    parser.add_argument('-n', '--max-processes', type=int, default=10, help='Maximum number of processes (default: 10)')
+    parser.add_argument('-t', '--truncate', action='store_true', help='Truncate target tables before migration')
+    parser.add_argument('-c', '--commit-size', type=int, default=1000, help='Commit size (default: 1000)')
+    parser.add_argument('-r', '--max-retry', type=int, default=5, help='Set max retry count (default: 5)')
+    parser.add_argument('-f', '--file-path', type=str, default=default_file_path,
+                        help='Set file path(default: input/migration_list.csv)')
+    args = parser.parse_args()
+
+    do_migration(max_processes=args.max_processes, truncate_flag=args.truncate, commit_size=args.commit_size,
+                 max_retry=args.max_retry, file_path=args.file_path)
 
     print("D2D Migration end")
     print("=======================================")

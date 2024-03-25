@@ -5,11 +5,10 @@ from constants import *
 
 def get_db_connect(owner, db_type) -> tuple[pyodbc.Connection, pyodbc.Cursor]:
     try:
-        # TODO 테스트 개발서버 and QA 서버
         if db_type == SOURCE:
-            connection_str = f"DSN=DataSource;DBQ=DB;UID=id;PWD=password"
+            connection_str = f"DSN=OracleODBC;DBQ=source_db;UID={owner};PWD={owner}"
         elif db_type == TARGET:
-            connection_str = f"DSN=DataSource;DBQ=DB;UID=id;PWD=password"
+            connection_str = f"DSN=OracleODBC;DBQ=target_db;UID={owner};PWD={owner}"
         else:
             raise ValueError('get_db_connect db_type must be entered only with source or target')
 
