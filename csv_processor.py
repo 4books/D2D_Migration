@@ -12,3 +12,13 @@ def get_mig_list(file_path: str) -> list:
     except IOError as e:
         print(f"Error reading file: {file_path}", e)
         return []
+
+
+def create_migration_result(file_path: str):
+    with open(file_path, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["OWNER", "TABLE", "STATUS", "COUNT", "MESSAGE"])
+
+
+def add_migration_result(file_path: str):
+    pass

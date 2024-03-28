@@ -2,7 +2,6 @@ import multiprocessing
 import platform
 import time
 from datetime import datetime
-import sys
 from multiprocessing import Queue, Process
 import argparse
 
@@ -14,31 +13,12 @@ from odbc_util import truncate_table
 from odbc_util import get_columns_info
 from odbc_util import get_pk_columns_info
 from csv_processor import get_mig_list
+from csv_processor import create_migration_result
+from csv_processor import add_migration_result
 from constants import *
 
 
-def _create_migration_result_csv(file_path, header=None):
-    # TODO
-    # 결과를 입력 받을 csv파일 생성
-    pass
-
-
-def _log_migration_result(
-        source_connection: pyodbc.Connection,
-        source_cursor: pyodbc.Cursor,
-        owner: str,
-        table: str,
-        result: str,
-        total_count=0,
-        exe_time=0,
-        message=""
-):
-    # TODO
-    # csv로 입력하는 방식으로 변경?
-    pass
-
-
-def migrate_table(
+def do_migrate_table(
         owner: str,
         table: str,
         result_dict: dict,
@@ -70,7 +50,9 @@ def migrate_table(
         if not pk_columns:
             pk_columns.append(column_names[0])
 
-        select_pk_query = f"SELECT {', '.join(pk_columns)} FROM {owner}.{table}"
+        select_pk_query = f"""
+            SELECT {', '.join(pk_columns)} FROM {owner}.{table}
+        """
 
         select_data_query = f"""
             SELECT {', '.join(column_names)} FROM {owner}.{table} 
@@ -116,7 +98,7 @@ def migrate_table(
 
                 # TODO 성공 로그 입력
                 print(f"성공 {owner}.{table} total_count: {total_count}")  # TODO 임시용
-                result_dict[f"{owner}{table}"] = SUCC
+                result_dict[(owner, table)] = SUCC
                 return
 
             start_time = time.time()
@@ -183,7 +165,7 @@ def migrate_table(
     except Exception as e:
         print(f"실패 {owner}.{table} total_count: {total_count}")  # TODO 임시용
         print(e)
-        result_dict[f"{owner}{table}"] = FAIL
+        result_dict[(owner, table)] = FAIL
         # TODO 실패 로그 입력 갯수와 메세지까지
     finally:
         complete_queue.put((owner, table))
@@ -214,7 +196,7 @@ def get_child_process_and_start_migrate(
     owner = mig_table[0]
     table = mig_table[1]
 
-    process = Process(target=migrate_table,
+    process = Process(target=do_migrate_table,
                       args=(owner, table, result_dict, complete_queue, truncate_flag, commit_size, max_retry))
     process.start()
 
@@ -224,6 +206,10 @@ def get_child_process_and_start_migrate(
 def do_migration(max_processes: int = 10, truncate_flag: bool = True, commit_size: int = 1000, max_retry: int = 5,
                  file_path: str = "") -> None:
     mig_list = get_mig_list(file_path)
+
+    result_file_path = f"output\\mig_result_{datetime.now().strftime("%Y_%m_%d_%H_%M_%S")}.csv" \
+        if platform.system() == "Windows" else f"output/mig_result_{datetime.now().strftime("%Y_%m_%d_%H_%M_%S")}.csv"
+    create_migration_result(result_file_path)
 
     # 실행 중인 프로세스 리스트
     processes = []
@@ -247,7 +233,7 @@ def do_migration(max_processes: int = 10, truncate_flag: bool = True, commit_siz
 
             for owner, table, process in processes:
                 if owner == completed_owner and table == completed_table:
-                    status = result_dict[f"{owner}{table}"]
+                    status = result_dict[(owner, table)]
                     processes.remove((owner, table, process))
 
                     if status == SUCC:
@@ -278,11 +264,7 @@ if __name__ == '__main__':
     print("D2D Migration start")
     print("시작 시간:", start_datetime.strftime("%Y-%m-%d %H:%M:%S"))
 
-    default_file_path = ""
-    if platform.system() == "Windows":
-        default_file_path = "input\\migration_list.csv"
-    else:
-        default_file_path = "input/migration_list.csv"
+    default_file_path = "input\\migration_list.csv" if platform.system() == "Windows" else "input/migration_list.csv"
 
     parser = argparse.ArgumentParser(description='D2D Migration Tool')
     parser.add_argument('-n', '--max-processes', type=int, default=10, help='Maximum number of processes (default: 10)')
