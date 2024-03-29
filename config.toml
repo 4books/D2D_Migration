@@ -16,6 +16,7 @@ dbms = "oracle"
 [source_connection_string]
 DSN = "OracleODBC"           #For Oracle
 DBQ = "localhost:1521/source_db" #For Oracle
+
 DRIVER='{Driver Name}'       #For other DB
 SERVER='localhost'           #For other DB
 DATABASE='mydatabase'        #For other DB
@@ -23,6 +24,7 @@ DATABASE='mydatabase'        #For other DB
 [target_connection_string]
 DSN = "OracleODBC"           #For Oracle
 DBQ = "localhost:1521/target_db" #For Oracle
+
 DRIVER='{Driver Name}'       #For other DB
 SERVER='localhost'           #For other DB
 DATABASE='mydatabase'        #For other DB
@@ -41,9 +43,9 @@ DATABASE='mydatabase'        #For other DB
 uid = 'scott'
 pwd = 'tiger'
 
-[scott]
-uid = 'scott'
-pwd = 'tiger'
+[your_db]
+uid = 'your_uid'
+pwd = 'your_pwd'
 
 
 ##### PK column select query #####

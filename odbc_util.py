@@ -118,24 +118,46 @@ def get_columns_info(schema: str, table_name: str, cursor: pyodbc.Cursor) -> tup
     return column_names, columns_type
 
 
-def get_lob_type(schema: str, table_name: str, cursor: pyodbc.Cursor) -> str:
-    select_query = f"""
-        SELECT DATA_TYPE 
-        FROM ALL_TAB_COLUMNS
-        WHERE OWNER = '{schema}' 
-        and TABLE_NAME = '{table_name}' 
-    """
+def has_lob_type(schema: str, table: str, cursor: pyodbc.Cursor) -> str:
+    dbms = config.get('source_db').get('dbms')
+    select_query = ""
+    if dbms == 'oracle':
+        select_query = f"""
+            SELECT COUNT(0) 
+            FROM ALL_TAB_COLUMNS
+            WHERE OWNER = '{schema}' 
+            AND TABLE_NAME = '{table}' 
+            AND DATA_TYPE IN ('BLOB', 'CLOB', 'NCLOB', 'BFILE')
+        """
+    elif dbms == 'mysql':
+        select_query = f"""
+            SELECT COUNT(0)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = '{schema}'
+            AND TABLE_NAME = '{table}'
+            AND DATA_TYPE IN ('blob', 'text', 'mediumblob', 'longblob', 'tinyblob', 'mediumtext', 'longtext', 'tinytext')
+        """
+    elif dbms == 'postgresql':
+        select_query = f"""
+            SELECT COUNT(0)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = '{schema}'
+            AND TABLE_NAME = '{table}'
+            AND DATA_TYPE IN ('text', 'bytea')
+        """
+    elif dbms == 'sql_server':
+        select_query = f"""
+            SELECT COUNT(1)
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = '{schema}'
+            AND TABLE_NAME = '{table}'
+            AND DATA_TYPE IN ('text', 'ntext', 'image', 'varbinary(max)', 'varchar(max)', 'nvarchar(max)');
+        """
+    
     try:
         cursor.execute(select_query)
-
-        lob_type = NONE
-        for row in cursor.fetchall():
-            data_type = row[0]
-            if data_type == BLOB:
-                return BLOB  # BLOB은 바로 리턴해주어야 함
-            elif data_type == CLOB:
-                lob_type = CLOB
-        return lob_type
+        lob_count = cursor.fetchone()[0]
+        return lob_count > 0
     except Exception as e:
         print("get_lob_type error!", e)
         raise e

@@ -7,7 +7,7 @@ import argparse
 
 from odbc_util import config
 from odbc_util import get_db_connect
-from odbc_util import get_lob_type
+from odbc_util import has_lob_type
 from odbc_util import truncate_table
 from odbc_util import get_columns_info
 from odbc_util import get_pk_columns_info
@@ -65,11 +65,10 @@ def do_migrate_table(
         if truncate_flag:
             truncate_table(schema, table, target_connection, target_cursor)
 
-        lob_type = get_lob_type(schema, table, target_cursor)
         batch_size = 1000
-        if lob_type == NONE:
-            batch_size = 1000
-        elif lob_type == CLOB or lob_type == BLOB:
+        
+        has_lob = has_lob_type(schema, table, target_cursor)
+        if has_lob:
             batch_size = 100
 
         source_pk_cursor.execute(select_pk_query)
