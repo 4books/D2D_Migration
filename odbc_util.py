@@ -91,9 +91,50 @@ def get_pk_columns_info(schema: str, table: str, cursor: pyodbc.Cursor) -> list[
 
     pk_columns = []
     dbms = config.get('source_db').get('dbms')
-    select_query = config.get('pk_select_query').get(dbms)
 
-    select_query = select_query.format(schema=schema, table=table)
+    if dbms == 'oracle':
+        select_query = f"""
+            SELECT cols.column_name
+            FROM all_constraints cons
+            JOIN all_cons_columns cols 
+                ON cons.constraint_name = cols.constraint_name
+            WHERE cons.owner = UPPER('{schema}')
+                AND cons.table_name = UPPER('{table}')
+                AND cons.constraint_type = 'P'
+            ORDER BY cols.position
+        """
+    elif dbms == 'mysql':
+        select_query = f"""
+            SELECT column_name
+            FROM information_schema.key_column_usage
+            WHERE table_schema = '{schema}'
+                AND table_name = '{table}'
+                AND constraint_name = 'PRIMARY'
+            ORDER BY ordinal_position
+        """
+    elif dbms == 'postgresql':
+        select_query = f"""
+            SELECT kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+                ON tc.constraint_catalog = kcu.constraint_catalog
+                AND tc.constraint_schema = kcu.constraint_schema
+                AND tc.constraint_name = kcu.constraint_name
+            WHERE tc.table_schema = '{schema}'
+                AND tc.table_name = '{table}'
+                AND tc.constraint_type = 'PRIMARY KEY'
+        """
+    elif dbms == 'sql_server':
+        select_query = f"""
+            SELECT cols.column_name
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE cols
+            JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS cons 
+                ON cols.constraint_name = cons.constraint_name
+            WHERE cons.table_schema = '{schema}'
+                AND cons.table_name = '{table}'
+                AND cons.constraint_type = 'PRIMARY KEY'
+            ORDER BY cols.ordinal_position
+        """
 
     cursor.execute(select_query)
     for column in cursor.fetchall():
