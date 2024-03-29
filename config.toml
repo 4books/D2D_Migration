@@ -1,0 +1,99 @@
+##### DBMS Type #####
+[source_db]
+dbms = "oracle"
+#dbms = "mysql"
+#dbms = "postgresql"
+#dbms = "sql_server"
+
+[target_db]
+dbms = "oracle"
+#dbms = "mysql"
+#dbms = "postgresql"
+#dbms = "sql_server"
+
+
+##### DBMS Connection string #####
+[source_connection_string]
+DSN = "OracleODBC"           #For Oracle
+DBQ = "localhost:1521/source_db" #For Oracle
+DRIVER='{Driver Name}'       #For other DB
+SERVER='localhost'           #For other DB
+DATABASE='mydatabase'        #For other DB
+
+[target_connection_string]
+DSN = "OracleODBC"           #For Oracle
+DBQ = "localhost:1521/target_db" #For Oracle
+DRIVER='{Driver Name}'       #For other DB
+SERVER='localhost'           #For other DB
+DATABASE='mydatabase'        #For other DB
+
+# Connection string Example 
+# MySQL, PostgreSQL, SQL Server
+#'DRIVER={Driver Name};SERVER=localhost;DATABASE=mydatabase;UID=username;PWD=password;'
+
+# ORACLE
+#"DSN=OracleODBC;DBQ=source_db;UID=uwername;PWD=password;"
+
+
+
+##### Schema & User#####
+[scott]
+uid = 'scott'
+pwd = 'tiger'
+
+[scott]
+uid = 'scott'
+pwd = 'tiger'
+
+
+##### PK column select query #####
+[pk_select_query]
+oracle = '''
+    SELECT cols.column_name
+    FROM all_constraints cons
+    JOIN all_cons_columns cols 
+        ON cons.constraint_name = cols.constraint_name
+    WHERE cons.owner = UPPER('{schema}')
+        AND cons.table_name = UPPER('{table}')
+        AND cons.constraint_type = 'P'
+    ORDER BY cols.position
+'''
+
+mysql = """
+    SELECT column_name
+    FROM information_schema.key_column_usage
+    WHERE table_schema = '{schema}'
+        AND table_name = '{table}'
+        AND constraint_name = 'PRIMARY'
+    ORDER BY ordinal_position
+"""
+
+postgresql = """
+    SELECT kcu.column_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_catalog = kcu.constraint_catalog
+        AND tc.constraint_schema = kcu.constraint_schema
+        AND tc.constraint_name = kcu.constraint_name
+    WHERE tc.table_schema = '{schema}'
+        AND tc.table_name = '{table}'
+        AND tc.constraint_type = 'PRIMARY KEY'
+"""
+
+sql_server = """
+    SELECT cols.column_name
+    FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE cols
+    JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS cons 
+        ON cols.constraint_name = cons.constraint_name
+    WHERE cons.table_schema = '{schema}'
+        AND cons.table_name = '{table}'
+        AND cons.constraint_type = 'PRIMARY KEY'
+    ORDER BY cols.ordinal_position;
+"""
+
+
+
+
+
+
+

@@ -5,8 +5,7 @@ from datetime import datetime
 from multiprocessing import Queue, Process
 import argparse
 
-import pyodbc
-
+from odbc_util import config
 from odbc_util import get_db_connect
 from odbc_util import get_lob_type
 from odbc_util import truncate_table
@@ -19,13 +18,14 @@ from constants import *
 
 
 def do_migrate_table(
-        owner: str,
+        schema: str,
         table: str,
         result_dict: dict,
         complete_queue: multiprocessing.Queue,
         truncate_flag: bool,
         commit_size: int,
-        max_retry: int
+        max_retry: int,
+        result_file_path: str
 ) -> None:
     table_start_time = time.time()
 
@@ -39,37 +39,33 @@ def do_migrate_table(
     total_count = 0
 
     try:
-        source_pk_connection, source_pk_cursor = get_db_connect(owner, SOURCE)
-        source_data_connection, source_data_cursor = get_db_connect(owner, SOURCE)
-        target_connection, target_cursor = get_db_connect(owner, TARGET)
+        source_pk_connection, source_pk_cursor = get_db_connect(schema, SOURCE)
+        source_data_connection, source_data_cursor = get_db_connect(schema, SOURCE)
+        target_connection, target_cursor = get_db_connect(schema, TARGET)
 
-        column_names, columns_type = get_columns_info(owner, table, source_data_cursor)
-        pk_columns = get_pk_columns_info(owner, table, source_data_cursor)
+        column_names, columns_type = get_columns_info(schema, table, source_data_cursor)
+        pk_columns = get_pk_columns_info(schema, table, source_data_cursor)
 
         # pk가 없는 테이블은 제일 첫번째 컬럼을 가져온다
         if not pk_columns:
             pk_columns.append(column_names[0])
 
         select_pk_query = f"""
-            SELECT {', '.join(pk_columns)} FROM {owner}.{table}
+            SELECT {', '.join(pk_columns)} FROM {schema}.{table}
         """
 
         select_data_query = f"""
-            SELECT {', '.join(column_names)} FROM {owner}.{table} 
+            SELECT {', '.join(column_names)} FROM {schema}.{table} 
             WHERE {" AND ".join(f"{column} = ?" for column in pk_columns)}
         """
 
-        insert_query = f"""
-            INSERT INTO {owner}.{table} NOLOGGING ({", ".join(column_names)})
-            values ({", ".join("TO_DATE(?, 'YYYY-MM-DD HH24:MI:SS')" if column_type == datetime else "?"
-                               for column_type in columns_type)})
-        """
+        insert_query = get_insert_query(schema, table, column_names, columns_type)
 
         # 테이블 초기화
         if truncate_flag:
-            truncate_table(owner, table, target_connection, target_cursor)
+            truncate_table(schema, table, target_connection, target_cursor)
 
-        lob_type = get_lob_type(owner, table, target_cursor)
+        lob_type = get_lob_type(schema, table, target_cursor)
         batch_size = 1000
         if lob_type == NONE:
             batch_size = 1000
@@ -90,15 +86,15 @@ def do_migrate_table(
 
             print("======================================")
             print(
-                f"{partition + 1}번째 {owner}.{table} pk select {len(key_list)}건 완료 {time.time() - start_time:.3f} sec 소요")
+                f"{partition + 1}번째 {schema}.{table} pk select {len(key_list)}건 완료 {time.time() - start_time:.3f} sec 소요")
 
             if not key_list:
                 target_connection.commit()
-                print(f"{owner}.{table} 남은 데이터 commit 완료")
+                print(f"{schema}.{table} 남은 데이터 commit 완료")
+                print(f"성공 {schema}.{table} total_count: {total_count}")
 
-                # TODO 성공 로그 입력
-                print(f"성공 {owner}.{table} total_count: {total_count}")  # TODO 임시용
-                result_dict[(owner, table)] = SUCC
+                result_dict[(schema, table)] = SUCC
+                add_migration_result(result_file_path, schema, table, 'S', total_count, SUCC)
                 return
 
             start_time = time.time()
@@ -119,7 +115,7 @@ def do_migrate_table(
                         if retry_count == max_retry:
                             raise e
                         else:
-                            print(f"{partition + 1}번째 {owner}.{table} data select 실패. retry {retry_count}/{max_retry}")
+                            print(f"{partition + 1}번째 {schema}.{table} data select 실패. retry {retry_count}/{max_retry}")
                             time.sleep(10)
 
                 insert_data.append(tuple(
@@ -132,7 +128,7 @@ def do_migrate_table(
 
             print("======================================")
             print(
-                f"{partition + 1}번째 {owner}.{table} data select {len(insert_data)}건 완료 {time.time() - start_time:.3f} sec 소요")
+                f"{partition + 1}번째 {schema}.{table} data select {len(insert_data)}건 완료 {time.time() - start_time:.3f} sec 소요")
 
             start_time = time.time()
             retry_count = 0
@@ -145,30 +141,30 @@ def do_migrate_table(
                     if retry_count == max_retry:
                         raise e
                     else:
-                        print(f"{partition + 1}번째 {owner}.{table} data insert 실패. retry {retry_count}/{max_retry}")
+                        print(f"{partition + 1}번째 {schema}.{table} data insert 실패. retry {retry_count}/{max_retry}")
                         time.sleep(10)
 
             total_count += len(insert_data)
 
             print("======================================")
             print(
-                f"{partition + 1}번째 {owner}.{table} data insert {len(insert_data)}건 완료 {time.time() - start_time:.3f} sec 소요")
+                f"{partition + 1}번째 {schema}.{table} data insert {len(insert_data)}건 완료 {time.time() - start_time:.3f} sec 소요")
             print("======================================")
 
             if total_count % commit_size == 0:
                 target_connection.commit()
-                print(f"{owner}.{table} {partition + 1}번째 commit. 총 {total_count}건 커밋 완료")
+                print(f"{schema}.{table} {partition + 1}번째 commit. 총 {total_count}건 커밋 완료")
 
             partition += 1
         # End of main while
 
     except Exception as e:
-        print(f"실패 {owner}.{table} total_count: {total_count}")  # TODO 임시용
-        print(e)
-        result_dict[(owner, table)] = FAIL
-        # TODO 실패 로그 입력 갯수와 메세지까지
+        print(f"실패 {schema}.{table} total_count: {total_count}", e)
+
+        result_dict[(schema, table)] = FAIL
+        add_migration_result(result_file_path, schema, table, 'E', total_count, str(e)[:500])
     finally:
-        complete_queue.put((owner, table))
+        complete_queue.put((schema, table))
         if source_pk_cursor:
             source_pk_cursor.close()
         if source_pk_connection:
@@ -182,7 +178,7 @@ def do_migrate_table(
         if target_connection:
             target_connection.close()
 
-        print(f"{owner}.{table} 총 소요시간 : {time.time() - table_start_time:.3f} sec")
+        print(f"{schema}.{table} 총 소요시간 : {time.time() - table_start_time:.3f} sec")
 
 
 def get_child_process_and_start_migrate(
@@ -191,16 +187,49 @@ def get_child_process_and_start_migrate(
         complete_queue: multiprocessing.Queue,
         truncate_flag: bool = True,
         commit_size: int = 1000,
-        max_retry: int = 5
+        max_retry: int = 5,
+        result_file_path: str = None
 ) -> tuple[str, str, multiprocessing.Process]:
-    owner = mig_table[0]
+    schema = mig_table[0]
     table = mig_table[1]
 
     process = Process(target=do_migrate_table,
-                      args=(owner, table, result_dict, complete_queue, truncate_flag, commit_size, max_retry))
+                      args=(schema, table, result_dict, complete_queue, truncate_flag, commit_size, max_retry, result_file_path))
     process.start()
 
-    return owner, table, process
+    return schema, table, process
+
+def get_insert_query(schema: str, table: str, column_names: list[str], columns_type: list[str]) -> str:
+    dbms = config.get('target_db').get('dbms')
+    if dbms == 'oracle':
+        return f"""
+            INSERT INTO {schema}.{table} NOLOGGING ({", ".join(column_names)})
+            VALUES ({", ".join("TO_DATE(?, 'YYYY-MM-DD HH24:MI:SS')" if column_type == datetime else "?"
+                               for column_type in columns_type)})
+        """
+    elif dbms == 'mysql':
+        return f"""
+            INSERT INTO {schema}.{table} ({", ".join(column_names)})
+            VALUES ({", ".join("STR_TO_DATE(?, '%Y-%m-%d %H:%i:%s')" if column_type == datetime else "?"
+                               for column_type in columns_type)})
+        """
+    elif dbms == 'postgresql':
+        return f"""
+            INSERT INTO {schema}.{table} ({", ".join(column_names)})
+            VALUES ({", ".join("TO_TIMESTAMP(?, 'YYYY-MM-DD HH24:MI:SS')" if column_type == datetime else "?"
+                               for column_type in columns_type)})
+        """
+    elif dbms == 'sql_server':
+        return f"""
+            INSERT INTO {schema}.{table} ({", ".join(column_names)})
+            VALUES ({", ".join("CONVERT(DATETIME, ?, 120)" if column_type == datetime else "?"
+                               for column_type in columns_type)})
+        """
+    
+    return f"""
+        INSERT INTO {schema}.{table} ({", ".join(column_names)}) 
+        VALUES ({", ".join("?" for _ in range(len(column_names)))})
+    """
 
 
 def do_migration(max_processes: int = 10, truncate_flag: bool = True, commit_size: int = 1000, max_retry: int = 5,
@@ -223,18 +252,18 @@ def do_migration(max_processes: int = 10, truncate_flag: bool = True, commit_siz
         # 실행 중인 프로세스 수가 최대 프로세스 수보다 작고 남은 테이블이 있는 경우
         while len(processes) < max_processes and mig_list:
             # child 프로세스 생성
-            owner, table, process = get_child_process_and_start_migrate(mig_list.pop(), result_dict, complete_queue,
-                                                                        truncate_flag, commit_size, max_retry)
-            processes.append((owner, table, process))
+            schema, table, process = get_child_process_and_start_migrate(mig_list.pop(), result_dict, complete_queue,
+                                                                        truncate_flag, commit_size, max_retry, result_file_path)
+            processes.append((schema, table, process))
 
         # 완료된 프로세스 확인 및 결과 처리
         while not complete_queue.empty():
-            completed_owner, completed_table = complete_queue.get()
+            completed_schema, completed_table = complete_queue.get()
 
-            for owner, table, process in processes:
-                if owner == completed_owner and table == completed_table:
-                    status = result_dict[(owner, table)]
-                    processes.remove((owner, table, process))
+            for schema, table, process in processes:
+                if schema == completed_schema and table == completed_table:
+                    status = result_dict[(schema, table)]
+                    processes.remove((schema, table, process))
 
                     if status == SUCC:
                         process.join()
@@ -245,10 +274,10 @@ def do_migration(max_processes: int = 10, truncate_flag: bool = True, commit_siz
 
                     # 새로운 프로세스 생성
                     if mig_list:
-                        owner, table, process = get_child_process_and_start_migrate(mig_list.pop(), result_dict,
+                        schema, table, process = get_child_process_and_start_migrate(mig_list.pop(), result_dict,
                                                                                     complete_queue, truncate_flag,
-                                                                                    commit_size, max_retry)
-                        processes.append((owner, table, process))
+                                                                                    commit_size, max_retry, result_file_path)
+                        processes.append((schema, table, process))
 
                     break
             # End of for
