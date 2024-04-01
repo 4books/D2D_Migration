@@ -4,12 +4,14 @@ dbms = "oracle"
 #dbms = "mysql"
 #dbms = "postgresql"
 #dbms = "sql_server"
+#dbms = "tibero"
 
 [target_db]
 dbms = "oracle"
 #dbms = "mysql"
 #dbms = "postgresql"
 #dbms = "sql_server"
+#dbms = "tibero"
 
 
 ##### DBMS Connection string #####
@@ -35,6 +37,9 @@ DATABASE='mydatabase'        #For other DB
 
 # ORACLE
 #"DSN=OracleODBC;DBQ=source_db;UID=uwername;PWD=password;"
+
+# Tibero
+#"DSN=OracleODBC;UID=uwername;PWD=password;"
 
 
 
