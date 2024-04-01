@@ -92,7 +92,7 @@ def get_pk_columns_info(schema: str, table: str, cursor: pyodbc.Cursor) -> list[
     pk_columns = []
     dbms = config.get('source_db').get('dbms')
 
-    if dbms == 'oracle':
+    if dbms == 'oracle' or dbms == 'tibero':
         select_query = f"""
             SELECT cols.column_name
             FROM all_constraints cons
